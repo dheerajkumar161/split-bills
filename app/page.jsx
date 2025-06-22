@@ -1,3 +1,5 @@
+'use client';
+import { useState } from 'react';
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -6,8 +8,55 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import Image from "next/image";
 import { FEATURES, STEPS, TESTIMONIALS } from "@/lib/landing";
+import AIAssistant from '@/components/AIAssistant';// Sample initial data for demonstration
+const initialUsers = [
+  { id: "user1", name: "You", balance: 0 },
+  { id: "user2", name: "Dheeraj", balance: 0 },
+  { id: "user3", name: "Lara", balance: 0 },
+  { id: "user4", name: "Hemanth", balance: 0 },
+  { id: "user5", name: "Rakesh", balance: 0 }
+];
+
+const initialGroups = [
+  { id: "group1", name: "Movie Buddies", members: ["user1", "user2"] },
+  { id: "group2", name: "Flat Mates", members: ["user1", "user3", "user4", "user5"] }
+];
 
 export default function LandingPage() {
+  const [users, setUsers] = useState(initialUsers);
+  const [groups, setGroups] = useState(initialGroups);
+
+  const handleCommand = (command) => {
+    const parsed = parseCommand(command, users);
+    
+    switch(parsed.type) {
+      case 'split':
+        const share = parsed.amount / parsed.participants.length;
+        setUsers(users.map(user => 
+          parsed.participants.includes(user.name) 
+            ? parsed.payer === user.name 
+              ? { ...user, balance: user.balance + (parsed.amount - share) }
+              : { ...user, balance: user.balance - share }
+            : user
+        ));
+        break;
+        
+      case 'createGroup':
+        const validMembers = parsed.members.filter(member => 
+          users.some(u => u.name === member)
+        );
+        setGroups([...groups, {
+          id: `group${groups.length + 1}`,
+          name: parsed.groupName,
+          members: validMembers.map(m => users.find(u => u.name === m).id)
+        }]);
+        break;
+        
+      default:
+        console.log("Command not understood:", command);
+    }
+  };
+
   return (
     <div className="flex flex-col pt-16">
       {/* ───── Hero ───── */}
@@ -20,8 +69,6 @@ export default function LandingPage() {
           <h1 className="gradient-title mx-auto max-w-6xl text-4xl font-bold md:text-8xl">
             Because Friendship Deserves Better than Math.
           </h1>
-
-          
 
           <div className="flex flex-col items-center gap-4 sm:flex-row justify-center">
             <Button
@@ -44,8 +91,6 @@ export default function LandingPage() {
             </Button>
           </div>
         </div>
-
-        
       </section>
 
       {/* ───── Features ───── */}
@@ -84,7 +129,7 @@ export default function LandingPage() {
       <section id="how-it-works" className="py-20">
         <div className="container mx-auto px-4 md:px-6 text-center">
           <Badge variant="outline" className="bg-green-100 text-green-700">
-            How It Works
+            How It Works
           </Badge>
           <h2 className="gradient-title mt-2 text-3xl md:text-4xl">
             Splitting expenses has never been easier
@@ -108,8 +153,37 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ───── Testimonials ───── */}
-      
+      {/* ───── AI Assistant ───── */}
+      <section id="ai-assistant" className="py-20">
+        <div className="container mx-auto px-4 md:px-6">
+          <div className="text-center mb-12">
+            <Badge variant="outline" className="bg-green-100 text-green-700">
+              AI Powered
+            </Badge>
+            <h2 className="gradient-title mt-2 text-3xl md:text-4xl">
+              Smart Expense Splitting
+            </h2>
+            <p className="mx-auto mt-3 max-w-[700px] text-gray-500 md:text-xl/relaxed">
+              Use voice commands or natural language to add and split expenses instantly. 
+              Just speak or type what you spent!
+            </p>
+          </div>
+
+          <div className="flex justify-center">
+            <div className="w-full max-w-4xl">
+              <AIAssistant />
+            </div>
+          </div>
+
+          <div className="text-center mt-8">
+            <p className="text-sm text-gray-600 max-w-2xl mx-auto">
+              Try saying: "Add ₹1200 for groceries split between Alice, Bob and me" 
+              or "Split ₹500 for dinner with John and Sarah"
+            </p>
+          </div>
+        </div>
+      </section>
+
 
       {/* ───── Call‑to‑Action ───── */}
       <section className="py-20 gradient">
@@ -129,9 +203,6 @@ export default function LandingPage() {
           </Button>
         </div>
       </section>
-
-      {/* ───── Footer ───── */}
-      
     </div>
   );
 }

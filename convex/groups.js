@@ -1,71 +1,167 @@
-import { query } from "./_generated/server";
+import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 
-export const getGroupOrMembers = query({
+// Create a new group with validation
+export const createGroup = mutation({
   args: {
-    groupId: v.optional(v.id("groups")), // Optional - if provided, will return details for just this group
+    name: v.string(),
+    description: v.optional(v.string()),
+    memberIds: v.array(v.id("users")),
   },
   handler: async (ctx, args) => {
-    // Use centralized getCurrentUser function
+    const user = await ctx.runQuery(internal.users.getCurrentUser);
+    
+    // Verify all members exist
+    const memberPromises = args.memberIds.map(id => ctx.db.get(id));
+    const members = await Promise.all(memberPromises);
+    if (members.some(m => !m)) {
+      throw new Error("One or more members not found");
+    }
+
+    // Include current user as admin if not already in members
+    const allMembers = new Set(args.memberIds);
+    allMembers.add(user._id);
+
+    return await ctx.db.insert("groups", {
+      name: args.name,
+      description: args.description || "",
+      createdBy: user._id,
+      members: Array.from(allMembers).map(id => ({
+        userId: id,
+        role: id === user._id ? "admin" : "member"
+      })),
+    });
+  },
+});
+
+// Update group details
+export const updateGroup = mutation({
+  args: {
+    groupId: v.id("groups"),
+    name: v.optional(v.string()),
+    description: v.optional(v.string()),
+    addMembers: v.optional(v.array(v.id("users"))),
+    removeMembers: v.optional(v.array(v.id("users"))),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.runQuery(internal.users.getCurrentUser);
+    const group = await ctx.db.get(args.groupId);
+    
+    if (!group) throw new Error("Group not found");
+    if (!group.members.some(m => m.userId === user._id && m.role === "admin")) {
+      throw new Error("Only group admins can modify the group");
+    }
+
+    // Update name/description
+    const updates = {};
+    if (args.name) updates.name = args.name;
+    if (args.description) updates.description = args.description;
+
+    // Handle member changes
+    if (args.addMembers || args.removeMembers) {
+      let members = [...group.members];
+      
+      // Add new members
+      if (args.addMembers?.length) {
+        const newMembers = args.addMembers.map(id => ({
+          userId: id,
+          role: "member"
+        }));
+        members = [...members, ...newMembers];
+      }
+      
+      // Remove members
+      if (args.removeMembers?.length) {
+        members = members.filter(
+          m => !args.removeMembers.includes(m.userId)
+        );
+      }
+      
+      updates.members = members;
+    }
+
+    return await ctx.db.patch(args.groupId, updates);
+  },
+});
+
+// Delete a group
+export const deleteGroup = mutation({
+  args: { groupId: v.id("groups") },
+  handler: async (ctx, args) => {
+    const user = await ctx.runQuery(internal.users.getCurrentUser);
+    const group = await ctx.db.get(args.groupId);
+    
+    if (!group) throw new Error("Group not found");
+    if (group.createdBy !== user._id) {
+      throw new Error("Only group creator can delete the group");
+    }
+    
+    // Delete related expenses and settlements
+    const expenses = await ctx.db.query("expenses")
+      .withIndex("by_group", q => q.eq("groupId", args.groupId))
+      .collect();
+      
+    const settlements = await ctx.db.query("settlements")
+      .filter(q => q.eq(q.field("groupId"), args.groupId))
+      .collect();
+      
+    await Promise.all([
+      ...expenses.map(e => ctx.db.delete(e._id)),
+      ...settlements.map(s => ctx.db.delete(s._id))
+    ]);
+    
+    return await ctx.db.delete(args.groupId);
+  },
+});
+
+// Get group details with optional member expansion
+export const getGroupOrMembers = query({
+  args: {
+    groupId: v.optional(v.id("groups")),
+  },
+  handler: async (ctx, args) => {
     const currentUser = await ctx.runQuery(internal.users.getCurrentUser);
 
-    // Get all groups where the user is a member
+    // Get all groups where user is a member
     const allGroups = await ctx.db.query("groups").collect();
-    const userGroups = allGroups.filter((group) =>
-      group.members.some((member) => member.userId === currentUser._id)
+    const userGroups = allGroups.filter(group =>
+      group.members.some(member => member.userId === currentUser._id)
     );
 
-    // If a specific group ID is provided, only return details for that group
+    // Return specific group with details if requested
     if (args.groupId) {
       const selectedGroup = userGroups.find(
-        (group) => group._id === args.groupId
+        group => group._id === args.groupId
       );
 
       if (!selectedGroup) {
         throw new Error("Group not found or you're not a member");
       }
 
-      // Get all user details for this group's members
+      // Get member details with roles
       const memberDetails = await Promise.all(
-        selectedGroup.members.map(async (member) => {
+        selectedGroup.members.map(async member => {
           const user = await ctx.db.get(member.userId);
-          if (!user) return null;
-
-          return {
+          return user ? {
             id: user._id,
             name: user.name,
             email: user.email,
             imageUrl: user.imageUrl,
             role: member.role,
-          };
+          } : null;
         })
       );
 
-      // Filter out any null values (in case a user was deleted)
-      const validMembers = memberDetails.filter((member) => member !== null);
-
-      // Return selected group with member details
       return {
         selectedGroup: {
           id: selectedGroup._id,
           name: selectedGroup.name,
           description: selectedGroup.description,
           createdBy: selectedGroup.createdBy,
-          members: validMembers,
+          members: memberDetails.filter(Boolean),
         },
-        groups: userGroups.map((group) => ({
-          id: group._id,
-          name: group.name,
-          description: group.description,
-          memberCount: group.members.length,
-        })),
-      };
-    } else {
-      // Just return the list of groups without member details
-      return {
-        selectedGroup: null,
-        groups: userGroups.map((group) => ({
+        groups: userGroups.map(group => ({
           id: group._id,
           name: group.name,
           description: group.description,
@@ -73,80 +169,90 @@ export const getGroupOrMembers = query({
         })),
       };
     }
+    
+    // Return group list without details
+    return {
+      selectedGroup: null,
+      groups: userGroups.map(group => ({
+        id: group._id,
+        name: group.name,
+        description: group.description,
+        memberCount: group.members.length,
+      })),
+    };
   },
 });
 
-// Get expenses for a specific group
+// Get detailed financial data for a group
 export const getGroupExpenses = query({
   args: { groupId: v.id("groups") },
   handler: async (ctx, { groupId }) => {
-    // Use centralized getCurrentUser function
     const currentUser = await ctx.runQuery(internal.users.getCurrentUser);
-
     const group = await ctx.db.get(groupId);
+    
     if (!group) throw new Error("Group not found");
-
-    if (!group.members.some((m) => m.userId === currentUser._id))
+    if (!group.members.some(m => m.userId === currentUser._id)) {
       throw new Error("You are not a member of this group");
+    }
 
-    const expenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_group", (q) => q.eq("groupId", groupId))
-      .collect();
+    // Get all financial data
+    const [expenses, settlements] = await Promise.all([
+      ctx.db.query("expenses")
+        .withIndex("by_group", q => q.eq("groupId", groupId))
+        .collect(),
+      ctx.db.query("settlements")
+        .filter(q => q.eq(q.field("groupId"), groupId))
+        .collect()
+    ]);
 
-    const settlements = await ctx.db
-      .query("settlements")
-      .filter((q) => q.eq(q.field("groupId"), groupId))
-      .collect();
-
-    /* ----------  member map ---------- */
+    // Prepare member data
     const memberDetails = await Promise.all(
-      group.members.map(async (m) => {
+      group.members.map(async m => {
         const u = await ctx.db.get(m.userId);
-        return { id: u._id, name: u.name, imageUrl: u.imageUrl, role: m.role };
+        return u ? {
+          id: u._id,
+          name: u.name,
+          imageUrl: u.imageUrl,
+          role: m.role,
+        } : null;
       })
     );
-    const ids = memberDetails.map((m) => m.id);
+    const validMembers = memberDetails.filter(Boolean);
+    const memberIds = validMembers.map(m => m.id);
 
-    /* ----------  ledgers ---------- */
-    // total net balance (old behaviour)
-    const totals = Object.fromEntries(ids.map((id) => [id, 0]));
-    // pair‑wise ledger  debtor -> creditor -> amount
+    // Initialize financial tracking
+    const totals = Object.fromEntries(memberIds.map(id => [id, 0]));
     const ledger = {};
-    ids.forEach((a) => {
+    memberIds.forEach(a => {
       ledger[a] = {};
-      ids.forEach((b) => {
+      memberIds.forEach(b => {
         if (a !== b) ledger[a][b] = 0;
       });
     });
 
-    /* ----------  apply expenses ---------- */
-    for (const exp of expenses) {
+    // Process expenses
+    expenses.forEach(exp => {
       const payer = exp.paidByUserId;
-      for (const split of exp.splits) {
-        if (split.userId === payer || split.paid) continue; // skip payer & settled
-        const debtor = split.userId;
-        const amt = split.amount;
+      exp.splits.forEach(split => {
+        if (split.userId === payer || split.paid) return;
+        
+        totals[payer] += split.amount;
+        totals[split.userId] -= split.amount;
+        ledger[split.userId][payer] += split.amount;
+      });
+    });
 
-        totals[payer] += amt;
-        totals[debtor] -= amt;
-
-        ledger[debtor][payer] += amt; // debtor owes payer
-      }
-    }
-
-    /* ----------  apply settlements ---------- */
-    for (const s of settlements) {
+    // Process settlements
+    settlements.forEach(s => {
       totals[s.paidByUserId] += s.amount;
       totals[s.receivedByUserId] -= s.amount;
+      ledger[s.paidByUserId][s.receivedByUserId] -= s.amount;
+    });
 
-      ledger[s.paidByUserId][s.receivedByUserId] -= s.amount; // they paid back
-    }
-
-    /* ----------  net the pair‑wise ledger ---------- */
-    ids.forEach((a) => {
-      ids.forEach((b) => {
-        if (a >= b) return; // visit each unordered pair once
+    // Net the ledger
+    memberIds.forEach(a => {
+      memberIds.forEach(b => {
+        if (a >= b) return;
         const diff = ledger[a][b] - ledger[b][a];
         if (diff > 0) {
           ledger[a][b] = diff;
@@ -160,22 +266,23 @@ export const getGroupExpenses = query({
       });
     });
 
-    /* ----------  shape the response ---------- */
-    const balances = memberDetails.map((m) => ({
+    // Prepare balance data
+    const balances = validMembers.map(m => ({
       ...m,
       totalBalance: totals[m.id],
       owes: Object.entries(ledger[m.id])
-        .filter(([, v]) => v > 0)
+        .filter(([, amount]) => amount > 0)
         .map(([to, amount]) => ({ to, amount })),
-      owedBy: ids
-        .filter((other) => ledger[other][m.id] > 0)
-        .map((other) => ({ from: other, amount: ledger[other][m.id] })),
+      owedBy: memberIds
+        .filter(id => ledger[id][m.id] > 0)
+        .map(from => ({ from, amount: ledger[from][m.id] })),
     }));
 
-    const userLookupMap = {};
-    memberDetails.forEach((member) => {
-      userLookupMap[member.id] = member;
-    });
+    // Create user lookup map
+    const userLookupMap = validMembers.reduce((map, member) => {
+      map[member.id] = member;
+      return map;
+    }, {});
 
     return {
       group: {
@@ -183,11 +290,63 @@ export const getGroupExpenses = query({
         name: group.name,
         description: group.description,
       },
-      members: memberDetails,
+      members: validMembers,
       expenses,
       settlements,
       balances,
       userLookupMap,
     };
+  },
+});
+
+// Add member to group
+export const addGroupMember = mutation({
+  args: {
+    groupId: v.id("groups"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.runQuery(internal.users.getCurrentUser);
+    const [group, newMember] = await Promise.all([
+      ctx.db.get(args.groupId),
+      ctx.db.get(args.userId)
+    ]);
+    
+    if (!group) throw new Error("Group not found");
+    if (!newMember) throw new Error("User not found");
+    if (!group.members.some(m => m.userId === user._id && m.role === "admin")) {
+      throw new Error("Only admins can add members");
+    }
+    if (group.members.some(m => m.userId === args.userId)) {
+      throw new Error("User is already a member");
+    }
+
+    return await ctx.db.patch(args.groupId, {
+      members: [...group.members, { userId: args.userId, role: "member" }]
+    });
+  },
+});
+
+// Remove member from group
+export const removeGroupMember = mutation({
+  args: {
+    groupId: v.id("groups"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.runQuery(internal.users.getCurrentUser);
+    const group = await ctx.db.get(args.groupId);
+    
+    if (!group) throw new Error("Group not found");
+    if (!group.members.some(m => m.userId === user._id && m.role === "admin")) {
+      throw new Error("Only admins can remove members");
+    }
+    if (group.createdBy === args.userId) {
+      throw new Error("Cannot remove group creator");
+    }
+
+    return await ctx.db.patch(args.groupId, {
+      members: group.members.filter(m => m.userId !== args.userId)
+    });
   },
 });

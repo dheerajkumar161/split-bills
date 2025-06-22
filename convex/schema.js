@@ -33,7 +33,8 @@ export default defineSchema({
   })
     .index("by_group", ["groupId"])
     .index("by_user_and_group", ["paidByUserId", "groupId"])
-    .index("by_date", ["date"]),
+    .index("by_date", ["date"])
+    .index("by_created_by", ["createdBy"]),
 
   // Settlements
   settlements: defineTable({
@@ -63,5 +64,64 @@ export default defineSchema({
         joinedAt: v.number(),
       })
     ),
-  }),
+  })
+    .index("by_created_by", ["createdBy"]),
+
+  // Balances - for tracking who owes whom (AI feature)
+  balances: defineTable({
+    userId: v.id("users"), // Reference to users table
+    amount: v.number(), // Positive = owed money, Negative = owes money
+    lastUpdated: v.number(), // timestamp of last update
+  })
+    .index("by_user", ["userId"]),
+
+  // Transactions - for detailed balance tracking (optional)
+  transactions: defineTable({
+    fromUserId: v.id("users"), // Who owes money
+    toUserId: v.id("users"), // Who is owed money
+    amount: v.number(), // Amount owed
+    expenseId: v.optional(v.id("expenses")), // Related expense if any
+    settlementId: v.optional(v.id("settlements")), // Related settlement if any
+    description: v.string(), // Description of the transaction
+    date: v.number(), // timestamp
+    status: v.string(), // "pending", "settled", "cancelled"
+    groupId: v.optional(v.id("groups")), // null for one-on-one transactions
+  })
+    .index("by_from_user", ["fromUserId"])
+    .index("by_to_user", ["toUserId"])
+    .index("by_expense", ["expenseId"])
+    .index("by_settlement", ["settlementId"])
+    .index("by_group", ["groupId"])
+    .index("by_date", ["date"])
+    .index("by_status", ["status"]),
+
+  // Categories - for expense categorization
+  categories: defineTable({
+    name: v.string(),
+    description: v.optional(v.string()),
+    color: v.optional(v.string()), // hex color code
+    icon: v.optional(v.string()), // icon name or emoji
+    createdBy: v.id("users"),
+    isDefault: v.boolean(), // system default categories
+  })
+    .index("by_created_by", ["createdBy"])
+    .index("by_default", ["isDefault"]),
+
+  // Notifications - for user notifications
+  notifications: defineTable({
+    userId: v.id("users"), // Who receives the notification
+    type: v.string(), // "expense_added", "payment_received", etc.
+    title: v.string(),
+    message: v.string(),
+    read: v.boolean(),
+    relatedExpenseId: v.optional(v.id("expenses")),
+    relatedSettlementId: v.optional(v.id("settlements")),
+    relatedGroupId: v.optional(v.id("groups")),
+    createdAt: v.number(), // timestamp
+  })
+    .index("by_user", ["userId"])
+    .index("by_read", ["read"])
+    .index("by_type", ["type"])
+    .index("by_created_at", ["createdAt"])
+    .index("by_user_and_read", ["userId", "read"]),
 });

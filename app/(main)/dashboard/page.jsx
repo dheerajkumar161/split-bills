@@ -16,7 +16,7 @@ import Link from "next/link";
 import { ExpenseSummary } from "./components/expense-summary";
 import { BalanceSummary } from "./components/balance-summary";
 import { GroupList } from "./components/group-list";
-
+import AIAssistant from './components/ai-assistant';
 // INR currency formatter
 function formatCurrencyINR(amount) {
   return new Intl.NumberFormat('en-IN', {
